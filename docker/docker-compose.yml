@@ -1,0 +1,82 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: kryber
+      POSTGRES_PASSWORD: kryber
+      POSTGRES_DB: kryber
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kryber"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/backend.Dockerfile
+    env_file: ../.env
+    environment:
+      KRYBER_DATABASE_URL: postgresql+psycopg://kryber:kryber@postgres:5432/kryber
+      KRYBER_REDIS_URL: redis://redis:6379/0
+      KRYBER_QUEUE_BACKEND: redis
+      KRYBER_STORAGE_BACKEND: local
+      KRYBER_STORAGE_LOCAL_ROOT: /data/storage
+      KRYBER_TMP_ROOT: /data/tmp
+    volumes:
+      - media:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/backend.Dockerfile
+    command: ["python", "-m", "app.workers.video_worker"]
+    env_file: ../.env
+    environment:
+      KRYBER_DATABASE_URL: postgresql+psycopg://kryber:kryber@postgres:5432/kryber
+      KRYBER_REDIS_URL: redis://redis:6379/0
+      KRYBER_QUEUE_BACKEND: redis
+      KRYBER_STORAGE_BACKEND: local
+      KRYBER_STORAGE_LOCAL_ROOT: /data/storage
+      KRYBER_TMP_ROOT: /data/tmp
+    volumes:
+      - media:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/frontend.Dockerfile
+      args:
+        API_URL: http://backend:8000
+    environment:
+      API_URL: http://backend:8000
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:
+  media:

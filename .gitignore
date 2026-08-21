@@ -1,0 +1,47 @@
+# ── Python ────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# ── Node / Next.js ────────────────────────────────────────
+node_modules/
+.next/
+out/
+.npm/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ── Env / secrets (NEVER commit real keys) ───────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ── Runtime data / databases ─────────────────────────────
+data/
+*.db
+*.sqlite
+*.sqlite3
+/tmp/
+
+# ── Editors / OS / misc ──────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+.config/

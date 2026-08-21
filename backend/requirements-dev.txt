@@ -1,0 +1,5 @@
+-r requirements.txt
+pytest>=8.0
+# Static ffmpeg/ffprobe binaries (sandbox/dev fallback when ffmpeg isn't installed).
+static-ffmpeg>=2.6
+imageio-ffmpeg>=0.5

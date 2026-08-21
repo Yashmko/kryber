@@ -1,0 +1,3 @@
+# Optional — heavy (pulls PyTorch). Install only where transcription runs.
+#   pip install -r requirements-whisper.txt
+openai-whisper>=20231117
