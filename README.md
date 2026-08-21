@@ -83,6 +83,21 @@ used automatically when their API keys are present.
 pytest                       # from repo root
 ```
 
+CI (GitHub Actions) runs the backend tests and the frontend build on every push.
+
+## Publishing to GitHub
+
+```bash
+# 1. Create an empty repo at https://github.com/new (e.g. "kryber"), then:
+git remote add origin https://github.com/YOUR_USERNAME/kryber.git
+git branch -M main
+git push -u origin main
+```
+
+Rendered Shorts (`data/`), the local SQLite DB and `node_modules/` are git-ignored
+— only source code, tests, config templates and the bundled caption font are
+committed. API keys are read from environment variables only (see `.env.example`).
+
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design and phased plan.
 
 ## Status
