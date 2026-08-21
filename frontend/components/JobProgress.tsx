@@ -13,6 +13,10 @@ const STEPS = [
 
 const ORDER = ["queued", "ingesting", "transcribing", "analyzing", "rendering", "completed"];
 
+// How long a job may sit in "queued" before we explain the likely cause.
+// Normally a worker claims a job within a second or two.
+const QUEUED_HINT_AFTER_MS = 30_000;
+
 function stepState(status: string, stepKey: string): "done" | "current" | "pending" {
   const currentIdx = ORDER.indexOf(status);
   const stepIdx = ORDER.indexOf(stepKey);
@@ -22,6 +26,20 @@ function stepState(status: string, stepKey: string): "done" | "current" | "pendi
 }
 
 export function JobProgress({ job }: { job: JobStatus }) {
+  const isQueued = job.status === "queued";
+  const [stuckInQueue, setStuckInQueue] = React.useState(false);
+
+  // A job that never leaves "queued" almost always means no worker is
+  // consuming the queue. Say so instead of spinning forever.
+  React.useEffect(() => {
+    if (!isQueued) {
+      setStuckInQueue(false);
+      return;
+    }
+    const timer = setTimeout(() => setStuckInQueue(true), QUEUED_HINT_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, [isQueued]);
+
   if (job.status === "failed") {
     return (
       <div className="w-full max-w-xl rounded-xl border border-red-900/50 bg-red-950/30 p-5 text-left">
@@ -74,6 +92,26 @@ export function JobProgress({ job }: { job: JobStatus }) {
           );
         })}
       </ul>
+
+      {isQueued && stuckInQueue && (
+        <div
+          role="status"
+          className="mt-6 rounded-xl border border-amber-900/50 bg-amber-950/20 p-4 text-left"
+        >
+          <p className="text-sm font-medium text-amber-200">Still waiting in the queue</p>
+          <p className="mt-1 text-xs leading-relaxed text-amber-100/70">
+            This job was accepted but no worker has picked it up yet. The usual cause is
+            that the backend is running without a worker, so jobs stay queued.
+          </p>
+          <p className="mt-2 text-xs leading-relaxed text-amber-100/70">
+            For a local or Codespaces setup, start the API with{" "}
+            <code className="font-mono text-amber-200">KRYBER_QUEUE_BACKEND=memory</code> and{" "}
+            <code className="font-mono text-amber-200">KRYBER_INPROC_WORKER=1</code>. The
+            backend&apos;s <code className="font-mono text-amber-200">/healthz</code> endpoint
+            reports the current queue and worker state.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

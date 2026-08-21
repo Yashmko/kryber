@@ -12,7 +12,7 @@ from .api import clips, jobs
 from .config import get_settings
 from .db import init_engine
 from .errors import KryberError
-from .services.queue import get_queue
+from .services.queue import WORKER_MISSING_HINT, get_queue, queue_status
 from .utils import logging as logmod
 
 logger = logmod.get_logger("kryber.main")
@@ -29,12 +29,32 @@ async def lifespan(app: FastAPI):
     # whole pipeline works without Redis. (Production uses a separate worker.)
     if settings.inproc_worker and settings.queue_backend == "memory":
         import threading
+        from functools import partial
 
         from .workers.video_worker import run_worker
 
-        thread = threading.Thread(target=run_worker, daemon=True, name="kryber-inproc-worker")
+        thread = threading.Thread(
+            target=partial(run_worker, in_process=True),
+            daemon=True,
+            name="kryber-inproc-worker",
+        )
         thread.start()
         logmod.info(logger, "in-process worker started")
+    elif settings.queue_backend == "memory":
+        # Jobs would be accepted and then sit in QUEUED forever, which looks
+        # like a frozen UI ("Preparing your video…"). Make it visible.
+        logmod.warning(
+            logger,
+            "no worker will process jobs: " + WORKER_MISSING_HINT,
+            queue_backend=settings.queue_backend,
+            inproc_worker=settings.inproc_worker,
+        )
+    else:
+        logmod.info(
+            logger,
+            "expecting an external worker process to consume the queue",
+            queue_backend=settings.queue_backend,
+        )
 
     logmod.info(logger, "backend started", environment=settings.environment)
     yield
@@ -64,7 +84,14 @@ def create_app() -> FastAPI:
 
     @app.get("/healthz", tags=["health"])
     def healthz() -> dict:
-        return {"status": "ok", "app": settings.app_name}
+        """API liveness plus queue/worker diagnostics.
+
+        ``status`` describes the API itself (it stays "ok" so liveness probes
+        keep working); ``queue`` tells you whether submitted jobs can actually
+        be processed, so "API healthy but worker unavailable" is no longer
+        indistinguishable from a healthy pipeline.
+        """
+        return {"status": "ok", "app": settings.app_name, "queue": queue_status()}
 
     @app.get("/", include_in_schema=False)
     def root() -> dict:

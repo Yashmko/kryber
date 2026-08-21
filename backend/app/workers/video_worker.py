@@ -2,6 +2,9 @@
 
 Also sweeps for jobs stuck in an active state beyond the job timeout so no job
 is ever left permanently stuck (§11, §25).
+
+The loop registers itself via :func:`app.services.queue.mark_worker_active` so
+the API can report whether jobs can actually be processed (``/healthz``).
 """
 from __future__ import annotations
 
@@ -14,7 +17,7 @@ from ..config import get_settings
 from ..db import get_session
 from ..models.job import JobStatus, VideoJob
 from ..services.pipeline import run_job
-from ..services.queue import get_queue
+from ..services.queue import get_queue, mark_worker_active, mark_worker_inactive
 from ..utils import logging as logmod
 
 logger = logmod.get_logger("kryber.worker")
@@ -50,34 +53,58 @@ def recover_stuck_jobs() -> int:
         session.close()
 
 
-def run_worker() -> None:
+def run_worker(in_process: bool = False) -> None:
     settings = get_settings()
     logmod.setup_logging(settings.log_level)
     queue = get_queue()
-    logmod.info(logger, "worker started", queue_backend=settings.queue_backend)
 
-    recovered = recover_stuck_jobs()
-    if recovered:
-        logmod.warning(logger, "recovered stuck jobs on startup", count=recovered)
+    # A standalone worker process gets its OWN empty in-memory queue, so it can
+    # never receive jobs enqueued by the API. Say so loudly instead of idling.
+    if settings.queue_backend == "memory" and not in_process:
+        logmod.warning(
+            logger,
+            "standalone worker is using the in-memory queue and has its own empty "
+            "queue: it will NEVER receive jobs from the API process. Use "
+            "KRYBER_QUEUE_BACKEND=redis for a separate worker, or run the API with "
+            "KRYBER_INPROC_WORKER=1 to host the worker inside it",
+            queue_backend=settings.queue_backend,
+        )
 
-    last_sweep = time.monotonic()
+    mark_worker_active()
+    logmod.info(
+        logger,
+        "worker started",
+        queue_backend=settings.queue_backend,
+        in_process=in_process,
+    )
 
-    while True:
-        if time.monotonic() - last_sweep >= SWEEP_INTERVAL_SECONDS:
-            recover_stuck_jobs()
-            last_sweep = time.monotonic()
+    try:
+        recovered = recover_stuck_jobs()
+        if recovered:
+            logmod.warning(logger, "recovered stuck jobs on startup", count=recovered)
 
-        job_id = queue.dequeue(timeout=5.0)
-        if job_id is None:
-            continue
+        last_sweep = time.monotonic()
 
-        logmod.info(logger, "claimed job", job_id=job_id)
-        try:
-            run_job(job_id)
-        except Exception:
-            # run_job records stage failures on the job; this is a last-resort guard.
-            logmod.error(logger, "worker crashed while running job", job_id=job_id, exc_info=True)
-            time.sleep(1)
+        while True:
+            if time.monotonic() - last_sweep >= SWEEP_INTERVAL_SECONDS:
+                recover_stuck_jobs()
+                last_sweep = time.monotonic()
+
+            job_id = queue.dequeue(timeout=5.0)
+            if job_id is None:
+                continue
+
+            logmod.info(logger, "claimed job", job_id=job_id)
+            try:
+                run_job(job_id)
+            except Exception:
+                # run_job records stage failures on the job; this is a last-resort guard.
+                logmod.error(logger, "worker crashed while running job", job_id=job_id, exc_info=True)
+                time.sleep(1)
+    finally:
+        # Stop advertising a worker that is no longer consuming the queue.
+        mark_worker_inactive()
+        logmod.warning(logger, "worker stopped", in_process=in_process)
 
 
 if __name__ == "__main__":

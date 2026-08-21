@@ -8,5 +8,9 @@ redis>=5.0
 httpx>=0.27
 tenacity>=8.2
 yt-dlp>=2024.4.9
+# YouTube player-challenge (EJS) solver scripts. Without it yt-dlp has to
+# fetch them at runtime; the pinned floor matches the script version yt-dlp
+# vendors. A JavaScript runtime (Node.js 22+ or Deno) must also be present.
+yt-dlp-ejs>=0.8.0
 python-multipart>=0.0.9
 pillow>=10.0
