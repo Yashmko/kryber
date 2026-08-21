@@ -5,6 +5,14 @@ validation, cleanup on failure, retries with exponential backoff, a polite
 inter-download interval, and clear errors. No CAPTCHA / anti-bot / auth
 circumvention of any kind — if YouTube refuses the request, the job fails with
 a useful INGESTION_FAILED error instead of being hammered.
+
+Optional operator session: when ``KRYBER_YTDLP_COOKIES_FILE`` points at a
+Netscape-format cookies.txt the operator exported from their OWN browser, it
+is passed to yt-dlp via ``--cookies``. That is the standard remedy for
+YouTube's "Sign in to confirm you're not a bot" check against datacenter IPs
+(e.g. GitHub Codespaces). The file is a secret: it is never committed, never
+logged, and the setting is a runtime environment variable only. Unset
+(default) keeps fully anonymous behavior.
 """
 from __future__ import annotations
 
@@ -32,8 +40,15 @@ logger = logmod.get_logger("kryber.ingestion.youtube")
 _lock = threading.Lock()
 _last_download_ts = 0.0
 
+# YouTube bot-check / sign-in challenges (typical for datacenter IPs, e.g.
+# GitHub Codespaces). Handled with a DYNAMIC hint (see _bot_check_hint) so the
+# error tells the operator exactly how to fix it.
+_BOT_CHECK_RE = re.compile(
+    r"sign in to confirm|confirm you'?re not a bot|please sign in|requires sign-in",
+    re.I,
+)
+
 _FRIENDLY_ERRORS = [
-    (re.compile(r"sign in to confirm", re.I), "YouTube requires sign-in for this video."),
     (re.compile(r"private video", re.I), "This video is private."),
     (re.compile(r"video unavailable|not available", re.I), "This video is unavailable."),
     (re.compile(r"age-restricted|age restricted", re.I), "This video is age-restricted."),
@@ -52,7 +67,52 @@ def _resolve_ytdlp() -> list[str]:
     return [sys.executable, "-m", "yt_dlp"]
 
 
+def _cookies_args() -> list[str]:
+    """Build the ``--cookies`` argv fragment from runtime settings (or none).
+
+    Raises a graceful, actionable :class:`IngestionFailedError`
+    (code=INGESTION_FAILED, stage=ingesting) when the operator configured a
+    cookie file that is not readable. This guard matters because yt-dlp
+    *silently ignores a missing cookie file* — without it, a mistyped path
+    would degrade to an anonymous download and fail later with a confusing
+    bot-check error. The cookie CONTENTS are never read, logged, or returned.
+    """
+    path = (get_settings().ytdlp_cookies_file or "").strip()
+    if not path:
+        return []
+    cookie_path = Path(path).expanduser()
+    if not cookie_path.is_file():
+        raise IngestionFailedError(
+            f"KRYBER_YTDLP_COOKIES_FILE is set to {path}, but that file does not "
+            "exist or is not readable. Export cookies.txt from your browser "
+            "(e.g. the 'Get cookies.txt LOCALLY' extension, while signed into "
+            "YouTube), place it on this machine outside the repository, and "
+            "point KRYBER_YTDLP_COOKIES_FILE at its path, then retry."
+        )
+    return ["--cookies", str(cookie_path)]
+
+
+def _bot_check_hint() -> str:
+    if (get_settings().ytdlp_cookies_file or "").strip():
+        return (
+            "YouTube still requires sign-in for this video. The configured cookie "
+            "file (KRYBER_YTDLP_COOKIES_FILE) may be stale or missing the YouTube "
+            "session cookies — re-export cookies.txt from your local browser, "
+            "update the file, and retry."
+        )
+    return (
+        "YouTube is blocking this request with a sign-in / bot check (common for "
+        "datacenter IPs such as GitHub Codespaces). Fix without committing "
+        "secrets: while signed into YouTube on your local PC, export a "
+        "cookies.txt file (e.g. the 'Get cookies.txt LOCALLY' extension), "
+        "upload it to this machine outside the repository, and set "
+        "KRYBER_YTDLP_COOKIES_FILE to its path, then retry."
+    )
+
+
 def _friendly(message: str, stderr: str) -> str:
+    if _BOT_CHECK_RE.search(stderr):
+        return f"{_bot_check_hint()} ({message})"
     for pattern, text in _FRIENDLY_ERRORS:
         if pattern.search(stderr):
             return f"{text} ({message})"
@@ -79,10 +139,13 @@ class YouTubeVideoSource(VideoSource):
         return canonical
 
     def get_metadata(self, url: str) -> VideoMetadata:
+        cookies = _cookies_args()  # may raise a clear INGESTION_FAILED
         argv = _resolve_ytdlp() + [
             "--skip-download", "--dump-single-json", "--no-playlist",
-            "--no-warnings", "--socket-timeout", "30", url,
-        ]
+            "--no-warnings", "--socket-timeout", "30",
+        ] + cookies + [url]
+        if cookies:
+            logmod.info(logger, "using runtime cookie file for yt-dlp", path=cookies[1])
         try:
             proc = run_command(argv, timeout=get_settings().ingestion_timeout_seconds)
         except ProcessFailure as exc:
@@ -112,18 +175,13 @@ class YouTubeVideoSource(VideoSource):
             # Metadata can fail on edge cases; proceed with the download attempt anyway.
             logmod.warning(logger, "metadata lookup failed; continuing to download")
 
-        # Polite pacing: never fire back-to-back downloads.
-        with _lock:
-            global _last_download_ts
-            wait = settings.ingestion_min_interval_seconds - (time.monotonic() - _last_download_ts)
-            if wait > 0:
-                time.sleep(wait)
-            _last_download_ts = time.monotonic()
-
+        # Build argv first so a misconfigured cookie file fails fast,
+        # before any polite pacing sleep.
         template = str(dest / "source.%(ext)s")
         # Point yt-dlp at our ffmpeg so video+audio streams can be merged to mp4.
         from ...utils.ffmpeg import find_ffmpeg
 
+        cookies = _cookies_args()  # may raise a clear INGESTION_FAILED
         argv = _resolve_ytdlp() + [
             "-f", settings.ytdlp_format,
             "--merge-output-format", "mp4",
@@ -134,10 +192,20 @@ class YouTubeVideoSource(VideoSource):
             "--retries", "1",
             "--fragment-retries", "1",
             "-o", template,
-        ]
+        ] + cookies
         if settings.ytdlp_player_clients:
             argv += ["--extractor-args", f"youtube:player_client={settings.ytdlp_player_clients}"]
+        if cookies:
+            logmod.info(logger, "using runtime cookie file for yt-dlp", path=cookies[1])
         argv.append(url)
+
+        # Polite pacing: never fire back-to-back downloads.
+        with _lock:
+            global _last_download_ts
+            wait = settings.ingestion_min_interval_seconds - (time.monotonic() - _last_download_ts)
+            if wait > 0:
+                time.sleep(wait)
+            _last_download_ts = time.monotonic()
 
         last_error: ProcessFailure | None = None
         for attempt in range(1, settings.ingestion_retries + 1):
