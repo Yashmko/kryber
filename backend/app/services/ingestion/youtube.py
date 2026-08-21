@@ -13,6 +13,12 @@ YouTube's "Sign in to confirm you're not a bot" check against datacenter IPs
 (e.g. GitHub Codespaces). The file is a secret: it is never committed, never
 logged, and the setting is a runtime environment variable only. Unset
 (default) keeps fully anonymous behavior.
+
+JavaScript challenge: YouTube's player requires a JS runtime to solve its
+``n``/signature challenges. yt-dlp enables only ``deno`` by default, so
+installed runtimes are detected and passed via ``--js-runtimes`` (see
+:mod:`.jsruntime`); when none is available the job fails with an actionable
+error instead of a bare extraction failure.
 """
 from __future__ import annotations
 
@@ -33,6 +39,7 @@ from ...utils import logging as logmod
 from ...utils.process import ProcessFailure, run_command
 from ...utils.validation import validate_source_url
 from .base import DownloadResult, VideoMetadata, VideoSource
+from .jsruntime import EJS_SETUP_HINT, js_runtime_args, resolve_js_runtimes, runtime_summary
 
 logger = logmod.get_logger("kryber.ingestion.youtube")
 
@@ -45,6 +52,20 @@ _last_download_ts = 0.0
 # error tells the operator exactly how to fix it.
 _BOT_CHECK_RE = re.compile(
     r"sign in to confirm|confirm you'?re not a bot|please sign in|requires sign-in",
+    re.I,
+)
+
+# YouTube JavaScript challenge failures (EJS solver). yt-dlp reports these as
+# warnings on stderr and then produces no usable formats, so the underlying
+# cause is invisible without this translation.
+_JS_CHALLENGE_RE = re.compile(
+    r"no supported javascript runtime|"
+    r"only deno is enabled by default|"
+    r"n challenge solving failed|"
+    r"signature solving failed|"
+    r"no usable challenge solver|"
+    r"challenge solver .* script|"
+    r"--js-runtimes",
     re.I,
 )
 
@@ -110,9 +131,24 @@ def _bot_check_hint() -> str:
     )
 
 
+def _js_challenge_hint() -> str:
+    """Actionable guidance for a failed YouTube JavaScript challenge."""
+    enabled = resolve_js_runtimes()
+    if not enabled:
+        return EJS_SETUP_HINT
+    return (
+        "YouTube's JavaScript player challenge could not be solved even though "
+        f"a runtime is enabled ({runtime_summary()}). Make sure yt-dlp and the "
+        "yt-dlp-ejs solver package are up to date (pip install -U yt-dlp "
+        "yt-dlp-ejs), and that the runtime is Node.js 22+ or Deno, then retry."
+    )
+
+
 def _friendly(message: str, stderr: str) -> str:
     if _BOT_CHECK_RE.search(stderr):
         return f"{_bot_check_hint()} ({message})"
+    if _JS_CHALLENGE_RE.search(stderr):
+        return f"{_js_challenge_hint()} ({message})"
     for pattern, text in _FRIENDLY_ERRORS:
         if pattern.search(stderr):
             return f"{text} ({message})"
@@ -140,12 +176,15 @@ class YouTubeVideoSource(VideoSource):
 
     def get_metadata(self, url: str) -> VideoMetadata:
         cookies = _cookies_args()  # may raise a clear INGESTION_FAILED
+        js_runtimes = js_runtime_args()
         argv = _resolve_ytdlp() + [
             "--skip-download", "--dump-single-json", "--no-playlist",
             "--no-warnings", "--socket-timeout", "30",
-        ] + cookies + [url]
+        ] + js_runtimes + cookies + [url]
         if cookies:
             logmod.info(logger, "using runtime cookie file for yt-dlp", path=cookies[1])
+        if js_runtimes:
+            logmod.info(logger, "enabling yt-dlp JavaScript runtimes", runtimes=runtime_summary())
         try:
             proc = run_command(argv, timeout=get_settings().ingestion_timeout_seconds)
         except ProcessFailure as exc:
@@ -182,6 +221,7 @@ class YouTubeVideoSource(VideoSource):
         from ...utils.ffmpeg import find_ffmpeg
 
         cookies = _cookies_args()  # may raise a clear INGESTION_FAILED
+        js_runtimes = js_runtime_args()
         argv = _resolve_ytdlp() + [
             "-f", settings.ytdlp_format,
             "--merge-output-format", "mp4",
@@ -192,11 +232,13 @@ class YouTubeVideoSource(VideoSource):
             "--retries", "1",
             "--fragment-retries", "1",
             "-o", template,
-        ] + cookies
+        ] + js_runtimes + cookies
         if settings.ytdlp_player_clients:
             argv += ["--extractor-args", f"youtube:player_client={settings.ytdlp_player_clients}"]
         if cookies:
             logmod.info(logger, "using runtime cookie file for yt-dlp", path=cookies[1])
+        if js_runtimes:
+            logmod.info(logger, "enabling yt-dlp JavaScript runtimes", runtimes=runtime_summary())
         argv.append(url)
 
         # Polite pacing: never fire back-to-back downloads.

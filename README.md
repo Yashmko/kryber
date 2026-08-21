@@ -24,6 +24,7 @@ Kryber has **one job**: turn long videos into Shorts. No avatars, no dubbing, no
 | Storage | S3-compatible (local filesystem fallback) |
 | Media | FFmpeg |
 | Ingestion | yt-dlp as a subprocess (YouTube adapter, swappable `VideoSource`) |
+| YouTube JS challenge | yt-dlp EJS solver (`yt-dlp-ejs`) run on Node.js 22+ / Deno |
 | Transcription | AssemblyAI pre-recorded API (swappable `TranscriptionProvider`) |
 | LLM | Google Gemini `generateContent` with structured JSON (swappable `LLMProvider`) |
 
@@ -38,6 +39,10 @@ docker compose -f docker/docker-compose.yml up --build
 - API → http://localhost:8000 (docs at /docs)
 
 ## Quickstart (local dev, no Docker)
+
+Prerequisites: Python 3.12+, FFmpeg, Node.js 20+ (frontend) and a JavaScript
+runtime for yt-dlp's YouTube challenge solver — **Node.js 22+** or Deno (see
+[YouTube requires a JavaScript runtime](#youtube-requires-a-javascript-runtime-nodejs-22-or-deno)).
 
 ```bash
 # backend
@@ -66,9 +71,48 @@ the full pipeline (real yt-dlp download + real FFmpeg rendering, deterministic
 transcript/clip selection) without calling AssemblyAI/Gemini. Real providers are
 used automatically when their API keys are present.
 
-## Troubleshooting: YouTube "Sign in to confirm you're not a bot"
+## YouTube requires a JavaScript runtime (Node.js 22+ or Deno)
 
-GitHub Codespaces run on **datacenter IPs**, which YouTube often challenges
+YouTube protects its player with JavaScript challenges (`n` / signature).
+yt-dlp solves them with the **EJS solver**, which needs two things:
+
+1. **The solver scripts** — shipped by the `yt-dlp-ejs` package, already a
+   declared dependency in `backend/requirements.txt`. Nothing to do.
+2. **A JavaScript runtime to execute them** — *not* bundled. You must have one
+   installed.
+
+> yt-dlp only enables **`deno`** by default. On a machine that has Node.js but
+> no Deno, yt-dlp finds no runtime, silently falls back to JS-less clients and
+> downloads fail or lose formats. Kryber therefore **detects the runtimes you
+> actually have installed** and passes `--js-runtimes` to yt-dlp for both the
+> metadata and download calls.
+
+**Install a runtime** (any one of these):
+
+```bash
+# Node.js 22+ (recommended — Codespaces and the backend Docker image ship it)
+nvm install 22 && nvm use 22
+node --version        # must be v22.0.0 or newer
+
+# ...or Deno
+curl -fsSL https://deno.land/install.sh | sh
+```
+
+Auto-detection covers Node.js 22+, Deno, QuickJS and Bun. To pin one
+explicitly, set `KRYBER_YTDLP_JS_RUNTIMES` (in your git-ignored `.env` or the
+environment):
+
+```bash
+KRYBER_YTDLP_JS_RUNTIMES=node                     # by name
+KRYBER_YTDLP_JS_RUNTIMES=node:/usr/local/bin/node # pin an exact binary
+KRYBER_YTDLP_JS_RUNTIMES=none                     # disable, use yt-dlp defaults
+```
+
+If no runtime is available the job fails with an `INGESTION_FAILED` error that
+names the fix rather than a bare extraction failure. Node.js older than 22 is
+ignored during detection, because that is yt-dlp's minimum supported version.
+
+## Troubleshooting: YouTube "Sign in to confirm you're not a bot"GitHub Codespaces run on **datacenter IPs**, which YouTube often challenges
 with a sign-in / bot check. Kryber does not attempt to circumvent bot
 protection — the job fails cleanly with an `INGESTION_FAILED` error that
 explains the fix. The standard remedy is to let yt-dlp reuse **your own**

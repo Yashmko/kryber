@@ -87,6 +87,14 @@ class Settings(BaseSettings):
     # itself is a secret: keep it outside the repository and set this via
     # environment variables only. Unset = anonymous downloads (default).
     ytdlp_cookies_file: str | None = None
+    # JavaScript runtimes yt-dlp may use to solve YouTube's player challenge
+    # (EJS solver). yt-dlp enables only "deno" by default, so a machine with
+    # Node.js but no Deno has NO challenge provider and loses formats. Unset
+    # = auto-detect what is installed (node 22+, deno, quickjs, bun) and pass
+    # it via --js-runtimes. Accepts a comma-separated list with optional
+    # paths, e.g. "node" or "node:/usr/local/bin/node". Use "none" to disable
+    # and keep yt-dlp's own defaults.
+    ytdlp_js_runtimes: str = ""
     ingestion_timeout_seconds: int = 600
     ingestion_retries: int = 3
     ingestion_min_interval_seconds: float = 2.0
