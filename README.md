@@ -66,6 +66,38 @@ the full pipeline (real yt-dlp download + real FFmpeg rendering, deterministic
 transcript/clip selection) without calling AssemblyAI/Gemini. Real providers are
 used automatically when their API keys are present.
 
+## Troubleshooting: YouTube "Sign in to confirm you're not a bot"
+
+GitHub Codespaces run on **datacenter IPs**, which YouTube often challenges
+with a sign-in / bot check. Kryber does not attempt to circumvent bot
+protection — the job fails cleanly with an `INGESTION_FAILED` error that
+explains the fix. The standard remedy is to let yt-dlp reuse **your own**
+browser session, at runtime only (nothing committed to the repo):
+
+1. On your **local PC** (signed into YouTube), export a `cookies.txt` file
+   (Netscape format) with a browser extension such as
+   [Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)
+   or `cookie-editor`.
+2. Upload that file to your Codespace **outside the repository**
+   (e.g. `~/cookies.txt`). Cookie files are git-ignored — never commit them.
+3. Set the environment variable (in your git-ignored `.env` or in Codespace
+   environment variables) and restart the backend:
+
+   ```bash
+   KRYBER_YTDLP_COOKIES_FILE=/home/user/cookies.txt
+   ```
+
+4. Retry the job. If YouTube still asks for sign-in, the cookie file is
+   stale — re-export it and update the file (no code changes needed).
+
+Unset the variable to return to anonymous downloads (works for most videos
+from residential IPs). The cookie file is only ever passed to yt-dlp via
+`--cookies`; it is never logged and never sent anywhere except YouTube.
+
+> **Docker:** the file must be visible *inside* the container — mount it
+> read-only (e.g. `volumes: ["~/cookies.txt:/cookies/cookies.txt:ro"]`) and
+> set `KRYBER_YTDLP_COOKIES_FILE=/cookies/cookies.txt` in `.env`.
+
 ## API
 
 | Method | Path | Description |

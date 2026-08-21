@@ -80,6 +80,13 @@ class Settings(BaseSettings):
     # Optional comma-separated yt-dlp player clients to try, e.g. "android,ios,tv".
     # Leave empty for yt-dlp's default behavior.
     ytdlp_player_clients: str = ""
+    # Optional path to a Netscape-format cookies.txt exported from your OWN
+    # browser (while signed into YouTube). Passed to yt-dlp via --cookies at
+    # runtime — the standard remedy for YouTube's "Sign in to confirm you're
+    # not a bot" check on datacenter IPs (e.g. GitHub Codespaces). The file
+    # itself is a secret: keep it outside the repository and set this via
+    # environment variables only. Unset = anonymous downloads (default).
+    ytdlp_cookies_file: str | None = None
     ingestion_timeout_seconds: int = 600
     ingestion_retries: int = 3
     ingestion_min_interval_seconds: float = 2.0
